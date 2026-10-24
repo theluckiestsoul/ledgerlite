@@ -20,3 +20,4 @@ All endpoints except `/health` need `Authorization: Bearer <api key>`. Amounts a
 - `GET /health`
 - `POST /accounts`, `GET /accounts`, `GET /accounts/{id}`
 - `POST /accounts/{id}/deposits`, `POST /accounts/{id}/withdrawals`
+- `GET /accounts/{id}/transactions?limit=&cursor=&type=&from=&to=`
