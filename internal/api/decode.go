@@ -35,6 +35,13 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	return nil
 }
 
+func requireID(value, field string) error {
+	if strings.TrimSpace(value) == "" {
+		return badRequest(field+" is required", field)
+	}
+	return nil
+}
+
 func parseCurrency(s string) (money.Currency, error) {
 	c, ok := money.ParseCurrency(s)
 	if !ok {
