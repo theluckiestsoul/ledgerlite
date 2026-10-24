@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 
 	"github.com/theluckiestsoul/ledgerlite/internal/ledger"
@@ -13,25 +15,18 @@ type transferRequest struct {
 	Reference     *string `json:"reference"`
 }
 
-type cachedResponse struct {
-	status int
-	body   any
-}
-
 func (s *server) createTransfer(w http.ResponseWriter, r *http.Request, userID string) error {
 	key := r.Header.Get("Idempotency-Key")
-	if key == "" {
-		return badRequest("Idempotency-Key header is required", "Idempotency-Key")
-	}
-	// Retrying with the same Idempotency-Key replays the original response.
-	if prev, ok := s.idempotency[key]; ok {
-		w.Header().Set("Idempotent-Replayed", "true")
-		writeJSON(w, prev.status, prev.body)
-		return nil
+	if key == "" || len(key) > maxIdempotencyKeyLength {
+		return badRequest("Idempotency-Key header is required (max 255 characters)", "Idempotency-Key")
 	}
 
+	raw, err := readBody(w, r)
+	if err != nil {
+		return err
+	}
 	var req transferRequest
-	if err := decodeJSON(w, r, &req); err != nil {
+	if err := unmarshalJSON(raw, &req); err != nil {
 		return err
 	}
 	if err := requireID(req.FromAccountID, "fromAccountId"); err != nil {
@@ -48,6 +43,17 @@ func (s *server) createTransfer(w http.ResponseWriter, r *http.Request, userID s
 		return err
 	}
 
+	sum := sha256.Sum256(raw)
+	prev, err := s.idempotency.begin(userID, key, hex.EncodeToString(sum[:]))
+	if err != nil {
+		return err
+	}
+	if prev != nil {
+		w.Header().Set("Idempotent-Replayed", "true")
+		writeJSON(w, prev.status, prev.body)
+		return nil
+	}
+
 	result, err := s.accounts.Transfer(userID, ledger.TransferRequest{
 		FromAccountID: req.FromAccountID,
 		ToAccountID:   req.ToAccountID,
@@ -55,10 +61,11 @@ func (s *server) createTransfer(w http.ResponseWriter, r *http.Request, userID s
 		Reference:     ref,
 	})
 	if err != nil {
+		s.idempotency.release(userID, key)
 		return err
 	}
 
-	s.idempotency[key] = cachedResponse{status: http.StatusCreated, body: result}
+	s.idempotency.complete(userID, key, http.StatusCreated, result)
 	writeJSON(w, http.StatusCreated, result)
 	return nil
 }

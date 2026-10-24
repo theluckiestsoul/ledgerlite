@@ -17,39 +17,34 @@ type TransferResult struct {
 
 // Transfer moves money from an account the caller owns to any account in the same currency.
 func (s *Service) Transfer(ownerID string, req TransferRequest) (TransferResult, error) {
+	if req.FromAccountID == req.ToAccountID {
+		return TransferResult{}, ErrSameAccount
+	}
 	transferID := NewID("trf")
 
-	debit, err := s.store.Apply(req.FromAccountID, func(a Account) (Transaction, error) {
-		if a.OwnerID != ownerID {
-			return Transaction{}, ErrNotFound
+	debit, credit, err := s.store.ApplyPair(req.FromAccountID, req.ToAccountID, func(from, to Account) (Transaction, Transaction, error) {
+		if from.OwnerID != ownerID {
+			return Transaction{}, Transaction{}, ErrNotFound
 		}
-		if a.Balance < req.Amount {
-			return Transaction{}, ErrInsufficientFunds
+		if from.Currency != to.Currency {
+			return Transaction{}, Transaction{}, ErrCurrencyMismatch
 		}
-		tx := s.newTx(a, TransferOut, req.Amount, a.Balance-req.Amount, req.Reference)
-		tx.TransferID, tx.CounterpartyAccountID = transferID, req.ToAccountID
-		return tx, nil
-	})
-	if err != nil {
-		return TransferResult{}, err
-	}
-
-	from, _ := s.store.Account(req.FromAccountID)
-	credit, err := s.store.Apply(req.ToAccountID, func(a Account) (Transaction, error) {
-		if a.Currency != from.Currency {
-			return Transaction{}, ErrCurrencyMismatch
+		if from.Balance < req.Amount {
+			return Transaction{}, Transaction{}, ErrInsufficientFunds
 		}
-		balance, err := money.Add(a.Balance, req.Amount)
+		toBalance, err := money.Add(to.Balance, req.Amount)
 		if err != nil {
-			return Transaction{}, ErrBalanceLimit
+			return Transaction{}, Transaction{}, ErrBalanceLimit
 		}
-		tx := s.newTx(a, TransferIn, req.Amount, balance, req.Reference)
-		tx.TransferID, tx.CounterpartyAccountID = transferID, from.ID
-		return tx, nil
+
+		debit := s.newTx(from, TransferOut, req.Amount, from.Balance-req.Amount, req.Reference)
+		debit.TransferID, debit.CounterpartyAccountID = transferID, to.ID
+		credit := s.newTx(to, TransferIn, req.Amount, toBalance, req.Reference)
+		credit.TransferID, credit.CounterpartyAccountID = transferID, from.ID
+		return debit, credit, nil
 	})
 	if err != nil {
 		return TransferResult{}, err
 	}
-
 	return TransferResult{TransferID: transferID, Debit: debit, Credit: credit}, nil
 }

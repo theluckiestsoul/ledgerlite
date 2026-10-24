@@ -43,6 +43,8 @@ func writeError(w http.ResponseWriter, err error) {
 		ae = &apiError{Status: http.StatusNotFound, Code: "not_found", Message: err.Error()}
 	case errors.Is(err, ledger.ErrInsufficientFunds):
 		ae = &apiError{Status: http.StatusUnprocessableEntity, Code: "insufficient_funds", Message: err.Error()}
+	case errors.Is(err, ledger.ErrSameAccount):
+		ae = &apiError{Status: http.StatusUnprocessableEntity, Code: "same_account", Message: err.Error()}
 	case errors.Is(err, ledger.ErrCurrencyMismatch):
 		ae = &apiError{Status: http.StatusUnprocessableEntity, Code: "currency_mismatch", Message: err.Error()}
 	case errors.Is(err, ledger.ErrBalanceLimit):

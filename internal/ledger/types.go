@@ -12,6 +12,7 @@ var (
 	ErrInsufficientFunds = errors.New("insufficient funds")
 	ErrBalanceLimit      = errors.New("balance limit exceeded")
 	ErrCurrencyMismatch  = errors.New("accounts use different currencies")
+	ErrSameAccount       = errors.New("source and destination must be different accounts")
 )
 
 type Account struct {

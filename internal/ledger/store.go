@@ -69,6 +69,29 @@ func (s *Store) Apply(accountID string, fn func(Account) (Transaction, error)) (
 	return tx, nil
 }
 
+// ApplyPair validates and records both legs of a transfer under one lock, so it is all-or-nothing.
+func (s *Store) ApplyPair(fromID, toID string, fn func(from, to Account) (Transaction, Transaction, error)) (Transaction, Transaction, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	from, ok := s.accounts[fromID]
+	if !ok {
+		return Transaction{}, Transaction{}, ErrNotFound
+	}
+	to, ok := s.accounts[toID]
+	if !ok {
+		return Transaction{}, Transaction{}, ErrNotFound
+	}
+	debit, credit, err := fn(*from, *to)
+	if err != nil {
+		return Transaction{}, Transaction{}, err
+	}
+	from.Balance = debit.BalanceAfter
+	to.Balance = credit.BalanceAfter
+	s.ledger[fromID] = append(s.ledger[fromID], debit)
+	s.ledger[toID] = append(s.ledger[toID], credit)
+	return debit, credit, nil
+}
+
 func (s *Store) Transactions(accountID string) []Transaction {
 	s.mu.Lock()
 	defer s.mu.Unlock()

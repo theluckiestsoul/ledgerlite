@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -116,12 +117,100 @@ func TestTransferCurrencyMismatch(t *testing.T) {
 	if errCode(res) != "currency_mismatch" {
 		t.Fatalf("code = %q", errCode(res))
 	}
+	if a.balance("alice", from) != 1000 || a.balance("alice", to) != 0 {
+		t.Fatalf("balances changed: %d, %d", a.balance("alice", from), a.balance("alice", to))
+	}
 }
 
 func TestTransferUnknownDestination(t *testing.T) {
 	a := newTestAPI(t)
 	from := a.openAccount("alice", "INR", 1000)
 	expectStatus(t, a.transfer("alice", newKey(), map[string]any{"fromAccountId": from, "toAccountId": "acc_missing", "amount": 100}), http.StatusNotFound)
+	if got := a.balance("alice", from); got != 1000 {
+		t.Fatalf("source balance = %d, want 1000", got)
+	}
+}
+
+func TestTransferToSameAccountIsRejected(t *testing.T) {
+	a := newTestAPI(t)
+	id := a.openAccount("alice", "INR", 1000)
+	res := a.transfer("alice", newKey(), map[string]any{"fromAccountId": id, "toAccountId": id, "amount": 100})
+	expectStatus(t, res, http.StatusUnprocessableEntity)
+	if errCode(res) != "same_account" || a.balance("alice", id) != 1000 {
+		t.Fatalf("res = %v", res.Body)
+	}
+}
+
+func TestIdempotencyKeyIsScopedPerUser(t *testing.T) {
+	a := newTestAPI(t)
+	key := newKey()
+	aliceFrom, aliceTo := a.openAccount("alice", "INR", 1000), a.openAccount("alice", "INR", 0)
+	bobFrom, bobTo := a.openAccount("bob", "INR", 1000), a.openAccount("bob", "INR", 0)
+
+	first := a.transfer("alice", key, map[string]any{"fromAccountId": aliceFrom, "toAccountId": aliceTo, "amount": 100})
+	second := a.transfer("bob", key, map[string]any{"fromAccountId": bobFrom, "toAccountId": bobTo, "amount": 100})
+
+	expectStatus(t, second, http.StatusCreated)
+	if second.Header.Get("Idempotent-Replayed") != "" || second.Body["transferId"] == first.Body["transferId"] {
+		t.Fatalf("bob received alice's response: %v", second.Body)
+	}
+	if a.balance("bob", bobTo) != 100 {
+		t.Fatalf("bob's transfer did not run")
+	}
+}
+
+func TestIdempotencyKeyReusedWithDifferentBody(t *testing.T) {
+	a := newTestAPI(t)
+	from, to := a.openAccount("alice", "INR", 1000), a.openAccount("alice", "INR", 0)
+	key := newKey()
+
+	expectStatus(t, a.transfer("alice", key, map[string]any{"fromAccountId": from, "toAccountId": to, "amount": 100}), http.StatusCreated)
+	res := a.transfer("alice", key, map[string]any{"fromAccountId": from, "toAccountId": to, "amount": 900})
+	expectStatus(t, res, http.StatusUnprocessableEntity)
+	if errCode(res) != "idempotency_key_reused" || a.balance("alice", from) != 900 {
+		t.Fatalf("res = %v balance = %d", res.Body, a.balance("alice", from))
+	}
+}
+
+func TestFailedTransferReleasesIdempotencyKey(t *testing.T) {
+	a := newTestAPI(t)
+	from, to := a.openAccount("alice", "INR", 100), a.openAccount("alice", "INR", 0)
+	key := newKey()
+	body := map[string]any{"fromAccountId": from, "toAccountId": to, "amount": 500}
+
+	expectStatus(t, a.transfer("alice", key, body), http.StatusUnprocessableEntity)
+	a.do("POST", "/accounts/"+from+"/deposits", "alice", map[string]any{"amount": 400})
+	expectStatus(t, a.transfer("alice", key, body), http.StatusCreated)
+}
+
+func TestConcurrentRequestsWithSameKeyTransferOnce(t *testing.T) {
+	a := newTestAPI(t)
+	from, to := a.openAccount("alice", "INR", 10000), a.openAccount("alice", "INR", 0)
+	key := newKey()
+	body := map[string]any{"fromAccountId": from, "toAccountId": to, "amount": 100}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res := a.transfer("alice", key, body)
+			if res.Status != http.StatusCreated && res.Status != http.StatusConflict {
+				t.Errorf("unexpected status %d", res.Status)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := a.balance("alice", from); got != 9900 {
+		t.Fatalf("balance = %d, want 9900 (exactly one transfer)", got)
+	}
+}
+
+func TestIdempotencyKeyTooLong(t *testing.T) {
+	a := newTestAPI(t)
+	res := a.transfer("alice", strings.Repeat("k", 256), map[string]any{"fromAccountId": "a", "toAccountId": "b", "amount": 1})
+	expectStatus(t, res, http.StatusBadRequest)
 }
 
 func TestTransferValidation(t *testing.T) {
@@ -134,9 +223,20 @@ func TestTransferValidation(t *testing.T) {
 		t.Errorf("field = %q", errField(missing))
 	}
 
-	badAmount := a.transfer("alice", newKey(), map[string]any{"fromAccountId": from, "toAccountId": from, "amount": 1.5})
-	expectStatus(t, badAmount, http.StatusBadRequest)
-	if errField(badAmount) != "amount" {
-		t.Errorf("field = %q", errField(badAmount))
+	cases := map[string]map[string]any{
+		"amount":       {"fromAccountId": from, "toAccountId": "acc_x", "amount": 1.5},
+		"zero amount":  {"fromAccountId": from, "toAccountId": "acc_x", "amount": 0},
+		"negative":     {"fromAccountId": from, "toAccountId": "acc_x", "amount": -5},
+		"missing":      {"fromAccountId": from, "toAccountId": "acc_x"},
+		"missing from": {"toAccountId": "acc_x", "amount": 5},
+		"empty ref":    {"fromAccountId": from, "toAccountId": "acc_x", "amount": 5, "reference": ""},
+	}
+	want := map[string]string{"amount": "amount", "zero amount": "amount", "negative": "amount", "missing": "amount", "missing from": "fromAccountId", "empty ref": "reference"}
+	for name, body := range cases {
+		res := a.transfer("alice", newKey(), body)
+		expectStatus(t, res, http.StatusBadRequest)
+		if errField(res) != want[name] {
+			t.Errorf("%s: field = %q, want %q", name, errField(res), want[name])
+		}
 	}
 }
