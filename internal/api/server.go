@@ -29,7 +29,7 @@ func NewServer(d Deps) http.Handler {
 	s := &server{
 		auth:        auth.New(d.APIKeys),
 		accounts:    ledger.NewService(d.Store, d.Now),
-		idempotency: newIdempotencyStore(24*time.Hour, 10_000, time.Now),
+		idempotency: newIdempotencyStore(24*time.Hour, 1_000, time.Now),
 	}
 
 	mux := http.NewServeMux()

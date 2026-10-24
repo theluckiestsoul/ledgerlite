@@ -190,27 +190,60 @@ func TestConcurrentRequestsWithSameKeyTransferOnce(t *testing.T) {
 	body := map[string]any{"fromAccountId": from, "toAccountId": to, "amount": 100}
 
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	executed := 0
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			res := a.transfer("alice", key, body)
-			if res.Status != http.StatusCreated && res.Status != http.StatusConflict {
-				t.Errorf("unexpected status %d", res.Status)
+			switch {
+			case res.Status == http.StatusCreated && res.Header.Get("Idempotent-Replayed") == "":
+				mu.Lock()
+				executed++
+				mu.Unlock()
+			case res.Status == http.StatusCreated, res.Status == http.StatusConflict && errCode(res) == "idempotency_key_in_progress":
+			default:
+				t.Errorf("unexpected response %d %v", res.Status, res.Body)
 			}
 		}()
 	}
 	wg.Wait()
+
+	if executed != 1 {
+		t.Fatalf("transfer executed %d times, want exactly 1", executed)
+	}
 
 	if got := a.balance("alice", from); got != 9900 {
 		t.Fatalf("balance = %d, want 9900 (exactly one transfer)", got)
 	}
 }
 
-func TestIdempotencyKeyTooLong(t *testing.T) {
+func TestIdempotencyKeyLength(t *testing.T) {
 	a := newTestAPI(t)
-	res := a.transfer("alice", strings.Repeat("k", 256), map[string]any{"fromAccountId": "a", "toAccountId": "b", "amount": 1})
-	expectStatus(t, res, http.StatusBadRequest)
+	from, to := a.openAccount("alice", "INR", 100), a.openAccount("alice", "INR", 0)
+	body := map[string]any{"fromAccountId": from, "toAccountId": to, "amount": 1}
+
+	expectStatus(t, a.transfer("alice", strings.Repeat("k", 255), body), http.StatusCreated)
+	expectStatus(t, a.transfer("alice", strings.Repeat("k", 256), body), http.StatusBadRequest)
+}
+
+func TestTransferBodyTooLarge(t *testing.T) {
+	a := newTestAPI(t)
+	res := a.do("POST", "/transfers", "alice", `{"amount":1,"pad":"`+strings.Repeat("x", 20000)+`"}`, "Idempotency-Key", newKey())
+	expectStatus(t, res, http.StatusRequestEntityTooLarge)
+}
+
+func TestTransferBalanceLimitLeavesSourceUntouched(t *testing.T) {
+	a := newTestAPI(t)
+	from := a.openAccount("alice", "INR", 1000)
+	full := a.openAccount("bob", "INR", 9007199254740991)
+
+	res := a.transfer("alice", newKey(), map[string]any{"fromAccountId": from, "toAccountId": full, "amount": 1})
+	expectStatus(t, res, http.StatusUnprocessableEntity)
+	if errCode(res) != "balance_limit_exceeded" || a.balance("alice", from) != 1000 {
+		t.Fatalf("res = %v, source balance = %d", res.Body, a.balance("alice", from))
+	}
 }
 
 func TestTransferValidation(t *testing.T) {

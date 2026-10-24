@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,8 +37,9 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return raw, err
 }
 
+// unmarshalJSON decodes the first JSON value, matching json.Decoder behaviour used elsewhere.
 func unmarshalJSON(raw []byte, dst any) error {
-	if err := json.Unmarshal(raw, dst); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(dst); err != nil {
 		var typeErr *json.UnmarshalTypeError
 		if errors.As(err, &typeErr) {
 			return badRequest(typeErr.Field+" has the wrong type", typeErr.Field)

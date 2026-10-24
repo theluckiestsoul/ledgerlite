@@ -23,12 +23,36 @@ func TestIdempotencyStoreExpiresEntries(t *testing.T) {
 	}
 }
 
-func TestIdempotencyStoreCap(t *testing.T) {
-	s := newIdempotencyStore(time.Hour, 1, time.Now)
-	if _, err := s.begin("u", "a", "f"); err != nil {
+func TestIdempotencyStoreInProgress(t *testing.T) {
+	s := newIdempotencyStore(time.Hour, 10, time.Now)
+	if _, err := s.begin("u", "k", "f"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.begin("u", "b", "f"); err != errKeyStoreFull {
-		t.Fatalf("err = %v, want errKeyStoreFull", err)
+	if _, err := s.begin("u", "k", "f"); err != errKeyInProgress {
+		t.Fatalf("err = %v, want errKeyInProgress", err)
+	}
+	s.release("u", "k")
+	if _, err := s.begin("u", "k", "f"); err != nil {
+		t.Fatalf("released key should be reusable: %v", err)
+	}
+}
+
+func TestIdempotencyStoreCapIsPerUser(t *testing.T) {
+	s := newIdempotencyStore(time.Hour, 2, time.Now)
+	for _, k := range []string{"a", "b"} {
+		if _, err := s.begin("noisy", k, "f"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.begin("noisy", "c", "f"); err != errTooManyInFlight {
+		t.Fatalf("err = %v, want errTooManyInFlight", err)
+	}
+	if _, err := s.begin("quiet", "a", "f"); err != nil {
+		t.Fatalf("another user must not be affected: %v", err)
+	}
+
+	s.complete("noisy", "a", 201, "ok")
+	if _, err := s.begin("noisy", "c", "f"); err != nil {
+		t.Fatalf("oldest completed entry should be evicted: %v", err)
 	}
 }
