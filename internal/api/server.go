@@ -28,7 +28,7 @@ func NewServer(d Deps) http.Handler {
 	if d.Store == nil {
 		d.Store = ledger.NewStore()
 	}
-	registry := webhooks.NewRegistry()
+	registry := webhooks.NewRegistry(d.Webhook.AllowPrivateNetworks)
 	s := &server{
 		auth:     auth.New(d.APIKeys),
 		accounts: ledger.NewService(d.Store, d.Now),

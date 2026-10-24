@@ -22,9 +22,10 @@ type receiver struct {
 	bodies    [][]byte
 }
 
-func newReceiver(t *testing.T, statuses ...int) *receiver {
+func newReceiver(t *testing.T, delay time.Duration, statuses ...int) *receiver {
 	rc := &receiver{statuses: statuses}
 	rc.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
 		body, _ := io.ReadAll(r.Body)
 		rc.mu.Lock()
 		defer rc.mu.Unlock()
@@ -46,40 +47,56 @@ func (rc *receiver) count() int {
 	return len(rc.bodies)
 }
 
+// waitFor polls because deliveries happen in the background.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met in time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func newWebhookAPI(t *testing.T) *testAPI {
 	return newTestAPI(t, func(d *api.Deps) {
-		d.Webhook = webhooks.Options{Sleep: func(time.Duration) {}}
+		d.Webhook = webhooks.Options{AllowPrivateNetworks: true, Sleep: func(time.Duration) {}}
 	})
 }
 
-func TestRegisterWebhook(t *testing.T) {
+func TestRegisterWebhookReturnsSecretOnce(t *testing.T) {
 	a := newWebhookAPI(t)
 	res := a.do("POST", "/webhooks", "bob", map[string]any{"url": "https://example.com/hooks"})
 	expectStatus(t, res, http.StatusCreated)
 	if !regexp.MustCompile(`^whsec_[0-9a-f]{48}$`).MatchString(res.Body["secret"].(string)) {
 		t.Errorf("secret = %v", res.Body["secret"])
 	}
-	if res.Body["url"] != "https://example.com/hooks" {
-		t.Errorf("url = %v", res.Body["url"])
+
+	list := a.do("GET", "/webhooks", "bob", nil).Body["data"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("list = %v", list)
+	}
+	if _, ok := list[0].(map[string]any)["secret"]; ok {
+		t.Fatal("GET /webhooks must not return secrets")
 	}
 }
 
 func TestListWebhooksOnlyOwn(t *testing.T) {
 	a := newWebhookAPI(t)
-	a.do("POST", "/webhooks", "bob", map[string]any{"url": "https://example.com/bob"})
+	expectStatus(t, a.do("POST", "/webhooks", "alice", map[string]any{"url": "https://example.com/alice"}), http.StatusCreated)
+	expectStatus(t, a.do("POST", "/webhooks", "bob", map[string]any{"url": "https://example.com/bob"}), http.StatusCreated)
 
-	res := a.do("GET", "/webhooks", "alice", nil)
-	expectStatus(t, res, http.StatusOK)
-	for _, ep := range res.Body["data"].([]any) {
-		if ep.(map[string]any)["ownerId"] != "user_alice" {
-			t.Fatalf("leaked endpoint %v", ep)
-		}
+	data := a.do("GET", "/webhooks", "alice", nil).Body["data"].([]any)
+	if len(data) != 1 || data[0].(map[string]any)["url"] != "https://example.com/alice" {
+		t.Fatalf("alice sees %v", data)
 	}
 }
 
-func TestRegisterWebhookRejectsInvalidURLs(t *testing.T) {
-	a := newWebhookAPI(t)
-	for _, u := range []string{"not a url", "ftp://example.com/hooks", "javascript:alert(1)", "https://"} {
+func TestRegisterWebhookRejectsUnsafeURLs(t *testing.T) {
+	a := newTestAPI(t)
+	for _, u := range []string{"not a url", "ftp://example.com/hooks", "http://example.com/hooks",
+		"https://169.254.169.254/latest/meta-data", "https://127.0.0.1:8080/", "http://:80"} {
 		res := a.do("POST", "/webhooks", "alice", map[string]any{"url": u})
 		expectStatus(t, res, http.StatusBadRequest)
 		if errField(res) != "url" {
@@ -88,45 +105,65 @@ func TestRegisterWebhookRejectsInvalidURLs(t *testing.T) {
 	}
 }
 
-func TestDepositSendsSignedEvent(t *testing.T) {
+func TestDepositAndWithdrawalSendSignedEvents(t *testing.T) {
 	a := newWebhookAPI(t)
-	rc := newReceiver(t)
+	rc := newReceiver(t, 0)
 	secret := a.do("POST", "/webhooks", "alice", map[string]any{"url": rc.URL}).Body["secret"].(string)
 	id := a.openAccount("alice", "INR", 0)
 
 	dep := a.do("POST", "/accounts/"+id+"/deposits", "alice", map[string]any{"amount": 700})
 	expectStatus(t, dep, http.StatusCreated)
+	waitFor(t, func() bool { return rc.count() == 1 })
+	expectStatus(t, a.do("POST", "/accounts/"+id+"/withdrawals", "alice", map[string]any{"amount": 200}), http.StatusCreated)
+	waitFor(t, func() bool { return rc.count() == 2 })
 
-	if rc.count() != 1 {
-		t.Fatalf("deliveries = %d, want 1", rc.count())
-	}
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	var event map[string]any
 	_ = json.Unmarshal(rc.bodies[0], &event)
 	if event["type"] != "transaction.created" || event["data"].(map[string]any)["id"] != dep.Body["id"] {
 		t.Fatalf("event = %v", event)
 	}
-	if !webhooks.Verify(secret, rc.signature[0], rc.bodies[0]) {
-		t.Fatal("signature did not verify")
+	for i := range rc.bodies {
+		if !webhooks.Verify(secret, rc.signature[i], rc.bodies[i]) {
+			t.Fatalf("delivery %d signature did not verify", i)
+		}
+	}
+}
+
+func TestFailedWithdrawalSendsNoEvent(t *testing.T) {
+	a := newWebhookAPI(t)
+	rc := newReceiver(t, 0)
+	a.do("POST", "/webhooks", "alice", map[string]any{"url": rc.URL})
+	id := a.openAccount("alice", "INR", 0)
+
+	expectStatus(t, a.do("POST", "/accounts/"+id+"/withdrawals", "alice", map[string]any{"amount": 1}), http.StatusUnprocessableEntity)
+	time.Sleep(100 * time.Millisecond)
+	if rc.count() != 0 {
+		t.Fatalf("deliveries = %d, want 0", rc.count())
 	}
 }
 
 func TestWebhookRetriesFailedDelivery(t *testing.T) {
 	a := newWebhookAPI(t)
-	rc := newReceiver(t, http.StatusInternalServerError, http.StatusOK)
+	rc := newReceiver(t, 0, http.StatusInternalServerError, http.StatusOK)
 	a.do("POST", "/webhooks", "bob", map[string]any{"url": rc.URL})
 	id := a.openAccount("bob", "INR", 0)
 
 	expectStatus(t, a.do("POST", "/accounts/"+id+"/deposits", "bob", map[string]any{"amount": 1}), http.StatusCreated)
-	if rc.count() != 2 {
-		t.Fatalf("deliveries = %d, want 2", rc.count())
-	}
+	waitFor(t, func() bool { return rc.count() == 2 })
 }
 
-func TestDepositSucceedsWhenWebhookKeepsFailing(t *testing.T) {
+func TestSlowReceiverDoesNotBlockDeposit(t *testing.T) {
 	a := newWebhookAPI(t)
-	rc := newReceiver(t, 500, 500, 500, 500, 500)
+	rc := newReceiver(t, time.Second)
 	a.do("POST", "/webhooks", "bob", map[string]any{"url": rc.URL})
 	id := a.openAccount("bob", "INR", 0)
 
+	start := time.Now()
 	expectStatus(t, a.do("POST", "/accounts/"+id+"/deposits", "bob", map[string]any{"amount": 1}), http.StatusCreated)
+	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
+		t.Fatalf("deposit took %v; delivery should be asynchronous", elapsed)
+	}
+	waitFor(t, func() bool { return rc.count() == 1 })
 }

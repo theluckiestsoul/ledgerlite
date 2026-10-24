@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
-const SignatureHeader = "Ledgerlite-Signature"
+const (
+	SignatureHeader  = "Ledgerlite-Signature"
+	DefaultTolerance = 5 * time.Minute
+)
 
 // Sign produces "t=<unix seconds>,v1=<hex HMAC-SHA256 of "t.payload">".
 func Sign(secret string, payload []byte, timestamp int64) string {
@@ -17,6 +21,11 @@ func Sign(secret string, payload []byte, timestamp int64) string {
 }
 
 func Verify(secret, header string, payload []byte) bool {
+	return VerifyAt(secret, header, payload, time.Now(), DefaultTolerance)
+}
+
+// VerifyAt rejects signatures older or newer than tolerance to stop replays.
+func VerifyAt(secret, header string, payload []byte, now time.Time, tolerance time.Duration) bool {
 	var ts int64
 	var sig string
 	for _, part := range strings.Split(header, ",") {
@@ -31,7 +40,10 @@ func Verify(secret, header string, payload []byte) bool {
 	if ts == 0 || sig == "" {
 		return false
 	}
-	return mac(secret, ts, payload) == sig
+	if age := now.Sub(time.Unix(ts, 0)); age > tolerance || age < -tolerance {
+		return false
+	}
+	return hmac.Equal([]byte(mac(secret, ts, payload)), []byte(sig))
 }
 
 func mac(secret string, timestamp int64, payload []byte) string {
