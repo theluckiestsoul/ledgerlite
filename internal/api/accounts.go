@@ -49,6 +49,7 @@ func (s *server) deposit(w http.ResponseWriter, r *http.Request, userID string) 
 	if err != nil {
 		return err
 	}
+	s.notifier.TransactionCreated(userID, tx)
 	writeJSON(w, http.StatusCreated, tx)
 	return nil
 }
@@ -62,6 +63,7 @@ func (s *server) withdraw(w http.ResponseWriter, r *http.Request, userID string)
 	if err != nil {
 		return err
 	}
+	s.notifier.TransactionCreated(userID, tx)
 	writeJSON(w, http.StatusCreated, tx)
 	return nil
 }
