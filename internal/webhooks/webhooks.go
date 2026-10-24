@@ -101,6 +101,17 @@ func (r *Registry) List(ownerID string) []Endpoint {
 	return out
 }
 
+func (r *Registry) active(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, ep := range r.endpoints {
+		if ep.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Registry) endpointsFor(ownerID string) []Endpoint {
 	r.mu.Lock()
 	defer r.mu.Unlock()

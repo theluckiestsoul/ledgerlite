@@ -100,6 +100,11 @@ func (d *Dispatcher) deliver(ep Endpoint, event Event) bool {
 	}
 
 	for attempt := 1; attempt <= d.maxAttempts; attempt++ {
+		// Queued jobs outlive DELETE /webhooks, so re-check before every attempt.
+		if !d.registry.active(ep.ID) {
+			log.Printf("webhook endpoint deleted, dropping event=%s endpoint=%s", event.ID, ep.ID)
+			return false
+		}
 		status, err := d.send(ep, payload)
 		if err == nil && status >= 200 && status < 300 {
 			return true

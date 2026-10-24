@@ -41,8 +41,9 @@ func TestSafeClientBlocksPrivateAddressesAtDialTime(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
 	defer srv.Close()
 
-	d := NewDispatcher(NewRegistry(false), Options{Sleep: func(time.Duration) {}})
-	ep := Endpoint{ID: "whk_test", URL: srv.URL, Secret: "s"}
+	reg := NewRegistry(true)
+	ep := mustRegister(t, reg, srv.URL)
+	d := NewDispatcher(reg, Options{Sleep: func(time.Duration) {}})
 	if d.deliver(ep, Event{ID: "evt_test", Data: ledger.Transaction{}}) {
 		t.Fatal("delivery to a loopback address should fail")
 	}
@@ -66,11 +67,12 @@ func TestDeliverRetriesWithBackoffAndStops(t *testing.T) {
 	defer srv.Close()
 
 	var sleeps []time.Duration
-	d := NewDispatcher(NewRegistry(true), Options{
+	reg := NewRegistry(true)
+	d := NewDispatcher(reg, Options{
 		AllowPrivateNetworks: true,
 		Sleep:                func(d time.Duration) { sleeps = append(sleeps, d) },
 	})
-	if d.deliver(Endpoint{ID: "whk_test", URL: srv.URL, Secret: "s"}, Event{ID: "evt_test"}) {
+	if d.deliver(mustRegister(t, reg, srv.URL), Event{ID: "evt_test"}) {
 		t.Fatal("expected delivery to fail")
 	}
 	if hits.Load() != 3 {
@@ -92,8 +94,9 @@ func TestDeliverDoesNotRetryClientErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := NewDispatcher(NewRegistry(true), Options{AllowPrivateNetworks: true, Sleep: func(time.Duration) {}})
-	d.deliver(Endpoint{ID: "whk_test", URL: srv.URL, Secret: "s"}, Event{ID: "evt_test"})
+	reg := NewRegistry(true)
+	d := NewDispatcher(reg, Options{AllowPrivateNetworks: true, Sleep: func(time.Duration) {}})
+	d.deliver(mustRegister(t, reg, srv.URL), Event{ID: "evt_test"})
 	if hits.Load() != 1 {
 		t.Fatalf("attempts = %d, want 1", hits.Load())
 	}
@@ -125,5 +128,30 @@ func TestRegistryLimitAndDelete(t *testing.T) {
 	}
 	if _, err := r.Register("u1", "https://example.com/hook"); err != nil {
 		t.Fatalf("slot should be free after delete: %v", err)
+	}
+}
+
+func mustRegister(t *testing.T, r *Registry, url string) Endpoint {
+	t.Helper()
+	ep, err := r.Register("u1", url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ep
+}
+
+func TestDeletedEndpointGetsNoQueuedEvents(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+
+	reg := NewRegistry(true)
+	ep := mustRegister(t, reg, srv.URL)
+	d := NewDispatcher(reg, Options{AllowPrivateNetworks: true, Sleep: func(time.Duration) {}})
+	if err := reg.Delete("u1", ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	if d.deliver(ep, Event{ID: "evt_test"}) || hits.Load() != 0 {
+		t.Fatalf("deleted endpoint received %d deliveries", hits.Load())
 	}
 }

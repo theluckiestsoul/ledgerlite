@@ -178,13 +178,32 @@ func TestDeleteWebhook(t *testing.T) {
 }
 
 func TestWebhookRetriesFailedDelivery(t *testing.T) {
-	a := newWebhookAPI(t)
-	rc := newReceiver(t, 0, http.StatusInternalServerError, http.StatusOK)
+	var mu sync.Mutex
+	var sleeps []time.Duration
+	a := newTestAPI(t, func(d *api.Deps) {
+		d.Webhook = webhooks.Options{AllowPrivateNetworks: true, Sleep: func(d time.Duration) {
+			mu.Lock()
+			sleeps = append(sleeps, d)
+			mu.Unlock()
+		}}
+	})
+	rc := newReceiver(t, 0, http.StatusInternalServerError, http.StatusInternalServerError, http.StatusOK)
 	a.do("POST", "/webhooks", "bob", map[string]any{"url": rc.URL})
 	id := a.openAccount("bob", "INR", 0)
 
 	expectStatus(t, a.do("POST", "/accounts/"+id+"/deposits", "bob", map[string]any{"amount": 1}), http.StatusCreated)
-	waitFor(t, func() bool { return rc.count() == 2 })
+	waitFor(t, func() bool { return rc.count() == 3 })
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sleeps) != 2 || sleeps[0] != 500*time.Millisecond || sleeps[1] != time.Second {
+		t.Fatalf("backoff = %v, want [500ms 1s]", sleeps)
+	}
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if string(rc.bodies[0]) != string(rc.bodies[2]) {
+		t.Fatal("retries must resend the same event")
+	}
 }
 
 func TestSlowReceiverDoesNotBlockDeposit(t *testing.T) {
