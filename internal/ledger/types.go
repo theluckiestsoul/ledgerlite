@@ -11,6 +11,7 @@ var (
 	ErrNotFound          = errors.New("account not found")
 	ErrInsufficientFunds = errors.New("insufficient funds")
 	ErrBalanceLimit      = errors.New("balance limit exceeded")
+	ErrCurrencyMismatch  = errors.New("accounts use different currencies")
 )
 
 type Account struct {
@@ -24,8 +25,10 @@ type Account struct {
 type TxType string
 
 const (
-	Deposit    TxType = "deposit"
-	Withdrawal TxType = "withdrawal"
+	Deposit     TxType = "deposit"
+	Withdrawal  TxType = "withdrawal"
+	TransferIn  TxType = "transfer_in"
+	TransferOut TxType = "transfer_out"
 )
 
 type Transaction struct {
@@ -36,4 +39,7 @@ type Transaction struct {
 	BalanceAfter int64     `json:"balanceAfter"`
 	Reference    string    `json:"reference,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
+
+	TransferID            string `json:"transferId,omitempty"`
+	CounterpartyAccountID string `json:"counterpartyAccountId,omitempty"`
 }
