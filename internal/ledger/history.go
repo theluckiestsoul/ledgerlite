@@ -2,17 +2,23 @@ package ledger
 
 import (
 	"encoding/base64"
+	"errors"
+	"strconv"
+	"strings"
 	"time"
 )
 
 const DefaultPageSize = 50
 
+var ErrInvalidCursor = errors.New("cursor is invalid")
+
 type HistoryQuery struct {
-	Limit  int
+	Limit int
+	// Cursor is the nextCursor from a previous page.
 	Cursor string
 	Type   TxType
-	From   time.Time
-	To     time.Time
+	From   time.Time // inclusive
+	Until  time.Time // exclusive
 }
 
 type HistoryPage struct {
@@ -28,42 +34,63 @@ func NewHistory(store *Store) *History {
 	return &History{store: store}
 }
 
-// List returns an account's ledger entries, newest first.
-func (h *History) List(accountID string, q HistoryQuery) HistoryPage {
-	after := decodeCursor(q.Cursor)
-	txs := h.store.Transactions(accountID)
-
-	matching := []Transaction{}
-	for i := len(txs) - 1; i >= 0; i-- {
-		tx := txs[i]
-		switch {
-		case q.Type != "" && tx.Type != q.Type:
-		case !q.From.IsZero() && tx.CreatedAt.Before(q.From):
-		case !q.To.IsZero() && tx.CreatedAt.After(q.To):
-		case !after.IsZero() && !tx.CreatedAt.Before(after):
-		default:
-			matching = append(matching, tx)
+// List returns an account's ledger entries, newest first. Cursors are ledger positions, so equal timestamps are never skipped.
+func (h *History) List(accountID string, q HistoryQuery) (HistoryPage, error) {
+	before := -1
+	if q.Cursor != "" {
+		seq, err := decodeCursor(q.Cursor)
+		if err != nil {
+			return HistoryPage{}, err
 		}
+		before = seq
 	}
 
-	page := HistoryPage{Data: matching}
-	if len(matching) > q.Limit {
-		page.Data = matching[:q.Limit]
-		cursor := encodeCursor(page.Data[len(page.Data)-1].CreatedAt)
+	page := HistoryPage{Data: []Transaction{}}
+	lastSeq, more := -1, false
+	h.store.ScanNewest(accountID, before, func(seq int, tx Transaction) bool {
+		if !q.matches(tx) {
+			return true
+		}
+		if len(page.Data) == q.Limit {
+			more = true
+			return false
+		}
+		page.Data = append(page.Data, tx)
+		lastSeq = seq
+		return true
+	})
+
+	if more {
+		cursor := encodeCursor(lastSeq)
 		page.NextCursor = &cursor
 	}
-	return page
+	return page, nil
 }
 
-func encodeCursor(t time.Time) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(t.Format(time.RFC3339Nano)))
+func (q HistoryQuery) matches(tx Transaction) bool {
+	switch {
+	case q.Type != "" && tx.Type != q.Type:
+		return false
+	case !q.From.IsZero() && tx.CreatedAt.Before(q.From):
+		return false
+	case !q.Until.IsZero() && !tx.CreatedAt.Before(q.Until):
+		return false
+	}
+	return true
 }
 
-func decodeCursor(cursor string) time.Time {
+func encodeCursor(seq int) string {
+	return base64.RawURLEncoding.EncodeToString([]byte("s:" + strconv.Itoa(seq)))
+}
+
+func decodeCursor(cursor string) (int, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
-		return time.Time{}
+		return 0, ErrInvalidCursor
 	}
-	t, _ := time.Parse(time.RFC3339Nano, string(raw))
-	return t
+	n, err := strconv.Atoi(strings.TrimPrefix(string(raw), "s:"))
+	if err != nil || n < 0 || !strings.HasPrefix(string(raw), "s:") {
+		return 0, ErrInvalidCursor
+	}
+	return n, nil
 }

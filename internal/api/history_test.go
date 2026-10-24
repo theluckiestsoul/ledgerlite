@@ -99,16 +99,79 @@ func TestHistoryFilterByType(t *testing.T) {
 
 func TestHistoryTimeRangeIsInclusive(t *testing.T) {
 	a := newHistoryAPI(t)
-	id := a.seed(10, 20, 30)
+	id := a.seed(10, 20, 30, 40)
 	all := a.do("GET", "/accounts/"+id+"/transactions", "alice", nil).Body["data"].([]any)
-	middle, oldest := all[1].(map[string]any), all[2].(map[string]any)
+	second, third := all[2].(map[string]any), all[1].(map[string]any)
 
 	path := fmt.Sprintf("/accounts/%s/transactions?from=%s&to=%s", id,
-		url.QueryEscape(oldest["createdAt"].(string)), url.QueryEscape(middle["createdAt"].(string)))
+		url.QueryEscape(second["createdAt"].(string)), url.QueryEscape(third["createdAt"].(string)))
 	got := amounts(a.do("GET", path, "alice", nil))
-	if fmt.Sprint(got) != "[20 10]" {
+	if fmt.Sprint(got) != "[30 20]" {
+		t.Fatalf("amounts = %v, want [30 20]", got)
+	}
+}
+
+func TestHistoryDateOnlyToIncludesWholeDay(t *testing.T) {
+	a := newHistoryAPI(t)
+	id := a.seed(1, 2, 3)
+	got := amounts(a.do("GET", "/accounts/"+id+"/transactions?from=2026-10-01&to=2026-10-01", "alice", nil))
+	if fmt.Sprint(got) != "[3 2 1]" {
 		t.Fatalf("amounts = %v", got)
 	}
+}
+
+func TestHistoryPaginationWithIdenticalTimestamps(t *testing.T) {
+	fixed := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	a := newTestAPI(t, func(d *api.Deps) { d.Now = func() time.Time { return fixed } })
+	id := a.seed(1, 2, 3, 4, 5)
+
+	var seen []int64
+	cursor := ""
+	for {
+		path := "/accounts/" + id + "/transactions?limit=2"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		res := a.do("GET", path, "alice", nil)
+		seen = append(seen, amounts(res)...)
+		next, _ := res.Body["nextCursor"].(string)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if fmt.Sprint(seen) != "[5 4 3 2 1]" {
+		t.Fatalf("seen = %v", seen)
+	}
+}
+
+func TestHistoryRequiresOwnership(t *testing.T) {
+	a := newHistoryAPI(t)
+	id := a.seed(100)
+	expectStatus(t, a.do("GET", "/accounts/"+id+"/transactions", "bob", nil), http.StatusNotFound)
+	expectStatus(t, a.do("GET", "/accounts/acc_missing/transactions", "alice", nil), http.StatusNotFound)
+}
+
+func TestHistoryRejectsInvalidQuery(t *testing.T) {
+	a := newHistoryAPI(t)
+	id := a.seed(1)
+	cases := map[string]string{
+		"limit=-1":       "limit",
+		"limit=0":        "limit",
+		"limit=abc":      "limit",
+		"limit=201":      "limit",
+		"type=foo":       "type",
+		"cursor=garbage": "cursor",
+		"to=31-10-2026":  "to",
+	}
+	for qs, field := range cases {
+		res := a.do("GET", "/accounts/"+id+"/transactions?"+qs, "alice", nil)
+		expectStatus(t, res, http.StatusBadRequest)
+		if errField(res) != field {
+			t.Errorf("%s: field = %q, want %q", qs, errField(res), field)
+		}
+	}
+	expectStatus(t, a.do("GET", "/accounts/"+id+"/transactions?limit=200", "alice", nil), http.StatusOK)
 }
 
 func TestHistoryRejectsInvalidDate(t *testing.T) {
