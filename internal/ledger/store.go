@@ -70,10 +70,12 @@ func (s *Store) Apply(accountID string, fn func(Account) (Transaction, error)) (
 }
 
 // ScanNewest walks an account's ledger newest first, starting below position before (-1 = from the end).
+// The ledger is append-only, so a slice snapshot taken under the lock can be read without holding it.
 func (s *Store) ScanNewest(accountID string, before int, fn func(seq int, tx Transaction) bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	entries := s.ledger[accountID]
+	s.mu.Unlock()
+
 	start := len(entries)
 	if before >= 0 && before < start {
 		start = before

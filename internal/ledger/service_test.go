@@ -51,3 +51,28 @@ func TestLedgerRecordsBalanceAfter(t *testing.T) {
 		t.Fatalf("unexpected ledger: %+v", txs)
 	}
 }
+
+func TestScanNewestWhileAppending(t *testing.T) {
+	store := NewStore()
+	svc := NewService(store, nil)
+	acc := svc.Open("u1", money.INR)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			_, _ = svc.Deposit("u1", acc.ID, 1, "")
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		prev := int64(-1)
+		store.ScanNewest(acc.ID, -1, func(_ int, tx Transaction) bool {
+			if prev != -1 && tx.BalanceAfter >= prev {
+				t.Errorf("entries out of order: %d after %d", tx.BalanceAfter, prev)
+			}
+			prev = tx.BalanceAfter
+			return true
+		})
+	}
+	<-done
+}

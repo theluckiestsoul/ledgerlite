@@ -125,23 +125,49 @@ func TestHistoryPaginationWithIdenticalTimestamps(t *testing.T) {
 	a := newTestAPI(t, func(d *api.Deps) { d.Now = func() time.Time { return fixed } })
 	id := a.seed(1, 2, 3, 4, 5)
 
+	seen, pages := a.collectPages(t, "/accounts/"+id+"/transactions?limit=2")
+	if pages != 3 || fmt.Sprint(seen) != "[5 4 3 2 1]" {
+		t.Fatalf("pages=%d seen=%v", pages, seen)
+	}
+}
+
+func TestHistoryPaginationWithTypeFilter(t *testing.T) {
+	a := newHistoryAPI(t)
+	id := a.seed(1000)
+	for _, step := range []struct {
+		path   string
+		amount int64
+	}{
+		{"withdrawals", 1}, {"deposits", 2}, {"withdrawals", 3}, {"deposits", 4}, {"deposits", 5}, {"withdrawals", 6},
+	} {
+		expectStatus(t, a.do("POST", "/accounts/"+id+"/"+step.path, "alice", map[string]any{"amount": step.amount}), http.StatusCreated)
+	}
+
+	seen, pages := a.collectPages(t, "/accounts/"+id+"/transactions?type=withdrawal&limit=2")
+	if pages != 2 || fmt.Sprint(seen) != "[6 3 1]" {
+		t.Fatalf("pages=%d seen=%v", pages, seen)
+	}
+}
+
+// collectPages follows nextCursor until the last page and returns all amounts and the page count.
+func (a *testAPI) collectPages(t *testing.T, path string) ([]int64, int) {
+	t.Helper()
 	var seen []int64
-	cursor := ""
+	cursor, pages := "", 0
 	for {
-		path := "/accounts/" + id + "/transactions?limit=2"
+		p := path
 		if cursor != "" {
-			path += "&cursor=" + url.QueryEscape(cursor)
+			p += "&cursor=" + url.QueryEscape(cursor)
 		}
-		res := a.do("GET", path, "alice", nil)
+		res := a.do("GET", p, "alice", nil)
+		expectStatus(t, res, http.StatusOK)
 		seen = append(seen, amounts(res)...)
+		pages++
 		next, _ := res.Body["nextCursor"].(string)
-		if next == "" {
-			break
+		if next == "" || pages > 10 {
+			return seen, pages
 		}
 		cursor = next
-	}
-	if fmt.Sprint(seen) != "[5 4 3 2 1]" {
-		t.Fatalf("seen = %v", seen)
 	}
 }
 
