@@ -16,6 +16,7 @@ type Deps struct {
 type server struct {
 	auth     *auth.Authenticator
 	accounts *ledger.Service
+	history  *ledger.History
 }
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, userID string) error
@@ -27,6 +28,7 @@ func NewServer(d Deps) http.Handler {
 	s := &server{
 		auth:     auth.New(d.APIKeys),
 		accounts: ledger.NewService(d.Store, d.Now),
+		history:  ledger.NewHistory(d.Store),
 	}
 
 	mux := http.NewServeMux()
@@ -38,6 +40,7 @@ func NewServer(d Deps) http.Handler {
 	mux.Handle("GET /accounts/{id}", s.authed(s.getAccount))
 	mux.Handle("POST /accounts/{id}/deposits", s.authed(s.deposit))
 	mux.Handle("POST /accounts/{id}/withdrawals", s.authed(s.withdraw))
+	mux.Handle("GET /accounts/{id}/transactions", s.authed(s.listTransactions))
 	return mux
 }
 
