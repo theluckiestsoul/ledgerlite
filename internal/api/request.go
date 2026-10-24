@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/theluckiestsoul/ledgerlite/internal/money"
 )
@@ -42,7 +43,7 @@ func decode[T any, PT validator[T]](w http.ResponseWriter, r *http.Request) (T, 
 		case errors.As(err, &typeErr) && typeErr.Field == "":
 			return req, validationError([]fieldError{{Field: "body", Message: "must be a JSON object"}})
 		case errors.As(err, &typeErr):
-			// encoding/json keeps decoding after a type error, so the remaining fields can still be validated.
+			// encoding/json keeps decoding after a type error (reporting only the first), so other fields are still validated.
 			errs = append(errs, fieldError{Field: typeErr.Field, Message: "has the wrong type"})
 		default:
 			return req, badRequest("request body is not valid JSON", "")
@@ -85,8 +86,8 @@ func (r *movementRequest) Validate() []fieldError {
 	}
 	if r.Reference != nil {
 		ref := strings.TrimSpace(*r.Reference)
-		if ref == "" || len(ref) > maxReferenceLength {
-			errs = append(errs, fieldError{Field: "reference", Message: fmt.Sprintf("must be 1-%d characters", maxReferenceLength)})
+		if n := utf8.RuneCountInString(ref); n == 0 || n > maxReferenceLength {
+			errs = append(errs, fieldError{Field: "reference", Message: fmt.Sprintf("must be a string of 1-%d characters", maxReferenceLength)})
 		}
 		r.Reference = &ref
 	}

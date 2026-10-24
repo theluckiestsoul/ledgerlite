@@ -170,11 +170,25 @@ func TestTypeErrorStillReportsOtherFields(t *testing.T) {
 		t.Fatalf("fields = %v, want [amount reference]", fields)
 	}
 
+	two := a.do("POST", "/accounts/"+id+"/deposits", "alice", `{"amount":"ten","reference":5}`)
+	expectStatus(t, two, http.StatusBadRequest)
+	errs := two.Body["error"].(map[string]any)["details"].(map[string]any)["errors"].([]any)
+	if len(errs) != 2 || !strings.Contains(errs[1].(map[string]any)["message"].(string), "must be a string") {
+		t.Fatalf("errors = %v", errs)
+	}
+
 	notObject := a.do("POST", "/accounts/"+id+"/deposits", "alice", `[]`)
 	expectStatus(t, notObject, http.StatusBadRequest)
 	if errField(notObject) != "body" {
 		t.Fatalf("field = %q, want body", errField(notObject))
 	}
+}
+
+func TestReferenceLimitCountsCharacters(t *testing.T) {
+	a := newTestAPI(t)
+	id := a.openAccount("alice", "INR", 0)
+	expectStatus(t, a.do("POST", "/accounts/"+id+"/deposits", "alice", map[string]any{"amount": 1, "reference": strings.Repeat("₹", 140)}), http.StatusCreated)
+	expectStatus(t, a.do("POST", "/accounts/"+id+"/deposits", "alice", map[string]any{"amount": 1, "reference": strings.Repeat("₹", 141)}), http.StatusBadRequest)
 }
 
 func TestDepositBalanceLimit(t *testing.T) {
