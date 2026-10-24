@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -16,21 +18,40 @@ const (
 )
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	if !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
-		return &apiError{Status: http.StatusUnsupportedMediaType, Code: "unsupported_media_type", Message: "content-type must be application/json"}
+	raw, err := readBody(w, r)
+	if err != nil {
+		return err
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		var tooLarge *http.MaxBytesError
+	return unmarshalJSON(raw, dst)
+}
+
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	if !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		return nil, &apiError{Status: http.StatusUnsupportedMediaType, Code: "unsupported_media_type", Message: "content-type must be application/json"}
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return nil, &apiError{Status: http.StatusRequestEntityTooLarge, Code: "payload_too_large", Message: fmt.Sprintf("body must be at most %d bytes", maxBodyBytes)}
+	}
+	return raw, err
+}
+
+// unmarshalJSON decodes the first JSON value, matching json.Decoder behaviour used elsewhere.
+func unmarshalJSON(raw []byte, dst any) error {
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(dst); err != nil {
 		var typeErr *json.UnmarshalTypeError
-		switch {
-		case errors.As(err, &tooLarge):
-			return &apiError{Status: http.StatusRequestEntityTooLarge, Code: "payload_too_large", Message: fmt.Sprintf("body must be at most %d bytes", maxBodyBytes)}
-		case errors.As(err, &typeErr):
+		if errors.As(err, &typeErr) {
 			return badRequest(typeErr.Field+" has the wrong type", typeErr.Field)
-		default:
-			return badRequest("request body is not valid JSON", "")
 		}
+		return badRequest("request body is not valid JSON", "")
+	}
+	return nil
+}
+
+func requireID(value, field string) error {
+	if strings.TrimSpace(value) == "" {
+		return badRequest(field+" is required", field)
 	}
 	return nil
 }

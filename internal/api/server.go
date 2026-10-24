@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/theluckiestsoul/ledgerlite/internal/auth"
 	"github.com/theluckiestsoul/ledgerlite/internal/ledger"
@@ -14,8 +15,9 @@ type Deps struct {
 }
 
 type server struct {
-	auth     *auth.Authenticator
-	accounts *ledger.Service
+	auth        *auth.Authenticator
+	accounts    *ledger.Service
+	idempotency *idempotencyStore
 }
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, userID string) error
@@ -25,8 +27,9 @@ func NewServer(d Deps) http.Handler {
 		d.Store = ledger.NewStore()
 	}
 	s := &server{
-		auth:     auth.New(d.APIKeys),
-		accounts: ledger.NewService(d.Store, d.Now),
+		auth:        auth.New(d.APIKeys),
+		accounts:    ledger.NewService(d.Store, d.Now),
+		idempotency: newIdempotencyStore(24*time.Hour, 1_000, time.Now),
 	}
 
 	mux := http.NewServeMux()
@@ -38,6 +41,7 @@ func NewServer(d Deps) http.Handler {
 	mux.Handle("GET /accounts/{id}", s.authed(s.getAccount))
 	mux.Handle("POST /accounts/{id}/deposits", s.authed(s.deposit))
 	mux.Handle("POST /accounts/{id}/withdrawals", s.authed(s.withdraw))
+	mux.Handle("POST /transfers", s.authed(s.createTransfer))
 	return mux
 }
 
