@@ -32,19 +32,28 @@ func decode[T any, PT validator[T]](w http.ResponseWriter, r *http.Request) (T, 
 	if !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
 		return req, &apiError{Status: http.StatusUnsupportedMediaType, Code: "unsupported_media_type", Message: "content-type must be application/json"}
 	}
+	var errs []fieldError
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
 		var tooLarge *http.MaxBytesError
 		var typeErr *json.UnmarshalTypeError
 		switch {
 		case errors.As(err, &tooLarge):
 			return req, &apiError{Status: http.StatusRequestEntityTooLarge, Code: "payload_too_large", Message: fmt.Sprintf("body must be at most %d bytes", maxBodyBytes)}
+		case errors.As(err, &typeErr) && typeErr.Field == "":
+			return req, validationError([]fieldError{{Field: "body", Message: "must be a JSON object"}})
 		case errors.As(err, &typeErr):
-			return req, validationError([]fieldError{{Field: typeErr.Field, Message: "has the wrong type"}})
+			// encoding/json keeps decoding after a type error, so the remaining fields can still be validated.
+			errs = append(errs, fieldError{Field: typeErr.Field, Message: "has the wrong type"})
 		default:
 			return req, badRequest("request body is not valid JSON", "")
 		}
 	}
-	if errs := PT(&req).Validate(); len(errs) > 0 {
+	for _, fe := range PT(&req).Validate() {
+		if len(errs) == 0 || fe.Field != errs[0].Field {
+			errs = append(errs, fe)
+		}
+	}
+	if len(errs) > 0 {
 		return req, validationError(errs)
 	}
 	return req, nil

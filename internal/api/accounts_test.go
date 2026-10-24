@@ -157,6 +157,26 @@ func TestValidationReportsAllErrors(t *testing.T) {
 	}
 }
 
+func TestTypeErrorStillReportsOtherFields(t *testing.T) {
+	a := newTestAPI(t)
+	id := a.openAccount("alice", "INR", 0)
+	res := a.do("POST", "/accounts/"+id+"/deposits", "alice", `{"amount":"ten","reference":""}`)
+	expectStatus(t, res, http.StatusBadRequest)
+	var fields []string
+	for _, e := range res.Body["error"].(map[string]any)["details"].(map[string]any)["errors"].([]any) {
+		fields = append(fields, e.(map[string]any)["field"].(string))
+	}
+	if strings.Join(fields, ",") != "amount,reference" {
+		t.Fatalf("fields = %v, want [amount reference]", fields)
+	}
+
+	notObject := a.do("POST", "/accounts/"+id+"/deposits", "alice", `[]`)
+	expectStatus(t, notObject, http.StatusBadRequest)
+	if errField(notObject) != "body" {
+		t.Fatalf("field = %q, want body", errField(notObject))
+	}
+}
+
 func TestDepositBalanceLimit(t *testing.T) {
 	a := newTestAPI(t)
 	id := a.openAccount("alice", "INR", 9007199254740991)
