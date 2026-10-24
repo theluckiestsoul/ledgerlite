@@ -20,3 +20,5 @@ All endpoints except `/health` need `Authorization: Bearer <api key>`. Amounts a
 - `GET /health`
 - `POST /accounts`, `GET /accounts`, `GET /accounts/{id}`
 - `POST /accounts/{id}/deposits`, `POST /accounts/{id}/withdrawals`
+
+Validation errors return every problem in `details.errors`; `details.field` still names the first one.

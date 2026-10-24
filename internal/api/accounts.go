@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/theluckiestsoul/ledgerlite/internal/money"
 )
 
 type openAccountRequest struct {
@@ -14,15 +16,11 @@ type movementRequest struct {
 }
 
 func (s *server) openAccount(w http.ResponseWriter, r *http.Request, userID string) error {
-	var req openAccountRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		return err
-	}
-	currency, err := parseCurrency(req.Currency)
+	req, err := decode[openAccountRequest](w, r)
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusCreated, s.accounts.Open(userID, currency))
+	writeJSON(w, http.StatusCreated, s.accounts.Open(userID, money.Currency(req.Currency)))
 	return nil
 }
 
@@ -41,11 +39,11 @@ func (s *server) getAccount(w http.ResponseWriter, r *http.Request, userID strin
 }
 
 func (s *server) deposit(w http.ResponseWriter, r *http.Request, userID string) error {
-	amount, ref, err := decodeMovement(w, r)
+	req, err := decode[movementRequest](w, r)
 	if err != nil {
 		return err
 	}
-	tx, err := s.accounts.Deposit(userID, r.PathValue("id"), amount, ref)
+	tx, err := s.accounts.Deposit(userID, r.PathValue("id"), req.Amount, deref(req.Reference))
 	if err != nil {
 		return err
 	}
@@ -54,29 +52,14 @@ func (s *server) deposit(w http.ResponseWriter, r *http.Request, userID string) 
 }
 
 func (s *server) withdraw(w http.ResponseWriter, r *http.Request, userID string) error {
-	amount, ref, err := decodeMovement(w, r)
+	req, err := decode[movementRequest](w, r)
 	if err != nil {
 		return err
 	}
-	tx, err := s.accounts.Withdraw(userID, r.PathValue("id"), amount, ref)
+	tx, err := s.accounts.Withdraw(userID, r.PathValue("id"), req.Amount, deref(req.Reference))
 	if err != nil {
 		return err
 	}
 	writeJSON(w, http.StatusCreated, tx)
 	return nil
-}
-
-func decodeMovement(w http.ResponseWriter, r *http.Request) (int64, string, error) {
-	var req movementRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		return 0, "", err
-	}
-	if err := validateAmount(req.Amount); err != nil {
-		return 0, "", err
-	}
-	ref, err := validateReference(req.Reference)
-	if err != nil {
-		return 0, "", err
-	}
-	return req.Amount, ref, nil
 }
