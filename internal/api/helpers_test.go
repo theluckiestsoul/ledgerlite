@@ -101,10 +101,15 @@ func errCode(r response) string {
 	return code
 }
 
+// errField returns the first field reported in a validation error.
 func errField(r response) string {
 	e, _ := r.Body["error"].(map[string]any)
 	d, _ := e["details"].(map[string]any)
-	field, _ := d["field"].(string)
+	errs, _ := d["errors"].([]any)
+	if len(errs) == 0 {
+		return ""
+	}
+	field, _ := errs[0].(map[string]any)["field"].(string)
 	return field
 }
 
