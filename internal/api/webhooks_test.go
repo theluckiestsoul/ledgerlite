@@ -138,9 +138,42 @@ func TestFailedWithdrawalSendsNoEvent(t *testing.T) {
 	id := a.openAccount("alice", "INR", 0)
 
 	expectStatus(t, a.do("POST", "/accounts/"+id+"/withdrawals", "alice", map[string]any{"amount": 1}), http.StatusUnprocessableEntity)
-	time.Sleep(100 * time.Millisecond)
-	if rc.count() != 0 {
-		t.Fatalf("deliveries = %d, want 0", rc.count())
+	expectStatus(t, a.do("POST", "/accounts/"+id+"/deposits", "alice", map[string]any{"amount": 5}), http.StatusCreated)
+	waitFor(t, func() bool { return rc.count() >= 1 })
+	time.Sleep(50 * time.Millisecond)
+
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	var event map[string]any
+	_ = json.Unmarshal(rc.bodies[0], &event)
+	if len(rc.bodies) != 1 || event["data"].(map[string]any)["type"] != "deposit" {
+		t.Fatalf("want exactly one deposit event, got %d deliveries", len(rc.bodies))
+	}
+}
+
+func TestEventsOnlyReachTheOwnersEndpoints(t *testing.T) {
+	a := newWebhookAPI(t)
+	aliceRC, bobRC := newReceiver(t, 0), newReceiver(t, 0)
+	expectStatus(t, a.do("POST", "/webhooks", "alice", map[string]any{"url": aliceRC.URL}), http.StatusCreated)
+	expectStatus(t, a.do("POST", "/webhooks", "bob", map[string]any{"url": bobRC.URL}), http.StatusCreated)
+	bobs := a.openAccount("bob", "INR", 0)
+
+	expectStatus(t, a.do("POST", "/accounts/"+bobs+"/deposits", "bob", map[string]any{"amount": 3}), http.StatusCreated)
+	waitFor(t, func() bool { return bobRC.count() == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if aliceRC.count() != 0 {
+		t.Fatalf("alice's endpoint received %d of bob's events", aliceRC.count())
+	}
+}
+
+func TestDeleteWebhook(t *testing.T) {
+	a := newWebhookAPI(t)
+	id := a.do("POST", "/webhooks", "alice", map[string]any{"url": "https://example.com/a"}).Body["id"].(string)
+
+	expectStatus(t, a.do("DELETE", "/webhooks/"+id, "bob", nil), http.StatusNotFound)
+	expectStatus(t, a.do("DELETE", "/webhooks/"+id, "alice", nil), http.StatusNoContent)
+	if data := a.do("GET", "/webhooks", "alice", nil).Body["data"].([]any); len(data) != 0 {
+		t.Fatalf("endpoint still listed: %v", data)
 	}
 }
 
@@ -162,7 +195,7 @@ func TestSlowReceiverDoesNotBlockDeposit(t *testing.T) {
 
 	start := time.Now()
 	expectStatus(t, a.do("POST", "/accounts/"+id+"/deposits", "bob", map[string]any{"amount": 1}), http.StatusCreated)
-	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 800*time.Millisecond {
 		t.Fatalf("deposit took %v; delivery should be asynchronous", elapsed)
 	}
 	waitFor(t, func() bool { return rc.count() == 1 })

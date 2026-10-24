@@ -17,10 +17,12 @@ func (s *server) registerWebhook(w http.ResponseWriter, r *http.Request, userID 
 		return err
 	}
 	ep, err := s.webhooks.Register(userID, req.URL)
-	if errors.Is(err, webhooks.ErrInvalidURL) {
+	switch {
+	case errors.Is(err, webhooks.ErrInvalidURL):
 		return badRequest(err.Error(), "url")
-	}
-	if err != nil {
+	case errors.Is(err, webhooks.ErrTooManyEndpoints):
+		return &apiError{Status: http.StatusUnprocessableEntity, Code: "webhook_limit_reached", Message: err.Error()}
+	case err != nil:
 		return err
 	}
 	writeJSON(w, http.StatusCreated, ep)
@@ -29,5 +31,13 @@ func (s *server) registerWebhook(w http.ResponseWriter, r *http.Request, userID 
 
 func (s *server) listWebhooks(w http.ResponseWriter, _ *http.Request, userID string) error {
 	writeJSON(w, http.StatusOK, map[string]any{"data": s.webhooks.List(userID)})
+	return nil
+}
+
+func (s *server) deleteWebhook(w http.ResponseWriter, r *http.Request, userID string) error {
+	if err := s.webhooks.Delete(userID, r.PathValue("id")); err != nil {
+		return &apiError{Status: http.StatusNotFound, Code: "not_found", Message: err.Error()}
+	}
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

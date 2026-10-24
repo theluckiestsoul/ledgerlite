@@ -47,6 +47,7 @@ func NewServer(d Deps) http.Handler {
 	mux.Handle("POST /accounts/{id}/withdrawals", s.authed(s.withdraw))
 	mux.Handle("POST /webhooks", s.authed(s.registerWebhook))
 	mux.Handle("GET /webhooks", s.authed(s.listWebhooks))
+	mux.Handle("DELETE /webhooks/{id}", s.authed(s.deleteWebhook))
 	return mux
 }
 

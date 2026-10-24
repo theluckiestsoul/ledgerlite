@@ -20,4 +20,4 @@ All endpoints except `/health` need `Authorization: Bearer <api key>`. Amounts a
 - `GET /health`
 - `POST /accounts`, `GET /accounts`, `GET /accounts/{id}`
 - `POST /accounts/{id}/deposits`, `POST /accounts/{id}/withdrawals`
-- `POST /webhooks`, `GET /webhooks` (public https URLs only; deliveries are async and signed with HMAC-SHA256)
+- `POST /webhooks`, `GET /webhooks`, `DELETE /webhooks/{id}` (max 10 per user, public https URLs only; deliveries are async and signed with HMAC-SHA256)

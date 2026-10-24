@@ -14,7 +14,13 @@ import (
 	"github.com/theluckiestsoul/ledgerlite/internal/ledger"
 )
 
-var ErrInvalidURL = errors.New("url must be a public https URL")
+const MaxEndpointsPerOwner = 10
+
+var (
+	ErrInvalidURL       = errors.New("url must be a public https URL")
+	ErrTooManyEndpoints = errors.New("webhook endpoint limit reached")
+	ErrEndpointNotFound = errors.New("webhook endpoint not found")
+)
 
 type Endpoint struct {
 	ID      string `json:"id"`
@@ -60,9 +66,30 @@ func (r *Registry) Register(ownerID, rawURL string) (Endpoint, error) {
 		CreatedAt: time.Now().UTC(),
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, existing := range r.endpoints {
+		if existing.OwnerID == ownerID {
+			count++
+		}
+	}
+	if count >= MaxEndpointsPerOwner {
+		return Endpoint{}, ErrTooManyEndpoints
+	}
 	r.endpoints = append(r.endpoints, ep)
-	r.mu.Unlock()
 	return ep, nil
+}
+
+func (r *Registry) Delete(ownerID, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, ep := range r.endpoints {
+		if ep.ID == id && ep.OwnerID == ownerID {
+			r.endpoints = append(r.endpoints[:i], r.endpoints[i+1:]...)
+			return nil
+		}
+	}
+	return ErrEndpointNotFound
 }
 
 // List returns the owner's endpoints without their secrets.
