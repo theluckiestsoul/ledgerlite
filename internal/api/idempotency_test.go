@@ -44,15 +44,34 @@ func TestIdempotencyStoreCapIsPerUser(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.begin("noisy", "c", "f"); err != errTooManyInFlight {
-		t.Fatalf("err = %v, want errTooManyInFlight", err)
+	if _, err := s.begin("noisy", "c", "f"); err != errKeyLimit {
+		t.Fatalf("err = %v, want errKeyLimit", err)
 	}
 	if _, err := s.begin("quiet", "a", "f"); err != nil {
 		t.Fatalf("another user must not be affected: %v", err)
 	}
 
+	// Completed keys must keep replaying until they expire, even at the cap.
 	s.complete("noisy", "a", 201, "ok")
-	if _, err := s.begin("noisy", "c", "f"); err != nil {
-		t.Fatalf("oldest completed entry should be evicted: %v", err)
+	if _, err := s.begin("noisy", "c", "f"); err != errKeyLimit {
+		t.Fatalf("err = %v, want errKeyLimit", err)
+	}
+	if e, err := s.begin("noisy", "a", "f"); err != nil || e == nil || e.status != 201 {
+		t.Fatalf("completed key should still replay: %v %v", e, err)
+	}
+}
+
+func TestIdempotencyStoreCapFreesAfterExpiry(t *testing.T) {
+	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	s := newIdempotencyStore(time.Hour, 1, func() time.Time { return now })
+	if _, err := s.begin("u", "a", "f"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.begin("u", "b", "f"); err != errKeyLimit {
+		t.Fatalf("err = %v, want errKeyLimit", err)
+	}
+	now = now.Add(2 * time.Hour)
+	if _, err := s.begin("u", "b", "f"); err != nil {
+		t.Fatalf("expired entry should free the slot: %v", err)
 	}
 }

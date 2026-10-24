@@ -14,8 +14,8 @@ var (
 		Message: "Idempotency-Key was already used with a different request body"}
 	errKeyInProgress = &apiError{Status: http.StatusConflict, Code: "idempotency_key_in_progress",
 		Message: "a request with this Idempotency-Key is still being processed"}
-	errTooManyInFlight = &apiError{Status: http.StatusTooManyRequests, Code: "too_many_in_flight",
-		Message: "too many in-flight idempotent requests, retry later"}
+	errKeyLimit = &apiError{Status: http.StatusTooManyRequests, Code: "idempotency_key_limit",
+		Message: "too many idempotency keys in the last 24 hours, retry later"}
 )
 
 type idempotencyEntry struct {
@@ -34,7 +34,7 @@ type userKeys struct {
 	order *list.List
 }
 
-// idempotencyStore scopes keys per user, caps each user separately and expires entries in insertion order.
+// idempotencyStore scopes keys per user, caps each user separately and only removes entries when they expire.
 type idempotencyStore struct {
 	mu      sync.Mutex
 	ttl     time.Duration
@@ -69,8 +69,8 @@ func (s *idempotencyStore) begin(userID, key, fingerprint string) (*idempotencyE
 			return e, nil
 		}
 	}
-	if len(u.byKey) >= s.perUser && !s.evictOldestCompleted(u) {
-		return nil, errTooManyInFlight
+	if len(u.byKey) >= s.perUser {
+		return nil, errKeyLimit
 	}
 
 	e := &idempotencyEntry{userID: userID, key: key, fingerprint: fingerprint, expiresAt: s.now().Add(s.ttl)}
@@ -110,16 +110,6 @@ func (s *idempotencyStore) evictExpired() {
 		}
 		s.remove(e)
 	}
-}
-
-func (s *idempotencyStore) evictOldestCompleted(u *userKeys) bool {
-	for el := u.order.Front(); el != nil; el = el.Next() {
-		if e := el.Value.(*idempotencyEntry); e.done {
-			s.remove(e)
-			return true
-		}
-	}
-	return false
 }
 
 func (s *idempotencyStore) remove(e *idempotencyEntry) {
