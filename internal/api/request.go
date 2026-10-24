@@ -3,66 +3,83 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/theluckiestsoul/ledgerlite/internal/money"
 )
 
-const maxReferenceLength = 140
+const (
+	maxBodyBytes       = 16 << 10
+	maxReferenceLength = 140
+)
 
 type fieldError struct {
 	Field   string `json:"field"`
 	Message string `json:"message"`
 }
 
-type validator interface {
+// validator is implemented on pointer receivers so Validate can normalise the request in place.
+type validator[T any] interface {
+	*T
 	Validate() []fieldError
 }
 
 // decode reads a JSON body into T and returns every validation error at once.
-func decode[T validator](r *http.Request) (T, error) {
+func decode[T any, PT validator[T]](w http.ResponseWriter, r *http.Request) (T, error) {
 	var req T
 	if !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
 		return req, &apiError{Status: http.StatusUnsupportedMediaType, Code: "unsupported_media_type", Message: "content-type must be application/json"}
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
 		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &typeErr) {
+		switch {
+		case errors.As(err, &tooLarge):
+			return req, &apiError{Status: http.StatusRequestEntityTooLarge, Code: "payload_too_large", Message: fmt.Sprintf("body must be at most %d bytes", maxBodyBytes)}
+		case errors.As(err, &typeErr):
 			return req, validationError([]fieldError{{Field: typeErr.Field, Message: "has the wrong type"}})
+		default:
+			return req, badRequest("request body is not valid JSON", "")
 		}
-		return req, badRequest("request body is not valid JSON", "")
 	}
-	if errs := req.Validate(); len(errs) > 0 {
+	if errs := PT(&req).Validate(); len(errs) > 0 {
 		return req, validationError(errs)
 	}
 	return req, nil
 }
 
+// validationError keeps details.field (first error) for existing clients alongside the full list.
 func validationError(errs []fieldError) *apiError {
 	return &apiError{
 		Status:  http.StatusBadRequest,
 		Code:    "invalid_request",
 		Message: "request validation failed",
-		Details: map[string]any{"errors": errs},
+		Details: map[string]any{"field": errs[0].Field, "errors": errs},
 	}
 }
 
-func (r openAccountRequest) Validate() []fieldError {
-	r.Currency = strings.ToUpper(strings.TrimSpace(r.Currency))
-	if _, ok := money.ParseCurrency(r.Currency); !ok {
+func (r *openAccountRequest) Validate() []fieldError {
+	c, ok := money.ParseCurrency(strings.ToUpper(strings.TrimSpace(r.Currency)))
+	if !ok {
 		return []fieldError{{Field: "currency", Message: "must be one of INR, USD, EUR"}}
 	}
+	r.Currency = string(c)
 	return nil
 }
 
-func (r movementRequest) Validate() []fieldError {
+func (r *movementRequest) Validate() []fieldError {
 	var errs []fieldError
-	if r.Amount <= 0 {
+	if !money.ValidAmount(r.Amount) {
 		errs = append(errs, fieldError{Field: "amount", Message: "must be a positive integer in minor units"})
 	}
-	if r.Reference != nil && len(strings.TrimSpace(*r.Reference)) > maxReferenceLength {
-		errs = append(errs, fieldError{Field: "reference", Message: "must be at most 140 characters"})
+	if r.Reference != nil {
+		ref := strings.TrimSpace(*r.Reference)
+		if ref == "" || len(ref) > maxReferenceLength {
+			errs = append(errs, fieldError{Field: "reference", Message: fmt.Sprintf("must be 1-%d characters", maxReferenceLength)})
+		}
+		r.Reference = &ref
 	}
 	return errs
 }
@@ -71,5 +88,5 @@ func deref(s *string) string {
 	if s == nil {
 		return ""
 	}
-	return strings.TrimSpace(*s)
+	return *s
 }

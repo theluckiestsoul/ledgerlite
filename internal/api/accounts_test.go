@@ -38,6 +38,12 @@ func TestOpenAccount(t *testing.T) {
 		t.Errorf("body = %v", res.Body)
 	}
 
+	lower := a.do("POST", "/accounts", "alice", map[string]any{"currency": " usd "})
+	expectStatus(t, lower, http.StatusCreated)
+	if lower.Body["currency"] != "USD" {
+		t.Errorf("currency stored as %v, want USD", lower.Body["currency"])
+	}
+
 	bad := a.do("POST", "/accounts", "alice", map[string]any{"currency": "BTC"})
 	expectStatus(t, bad, http.StatusBadRequest)
 	if errField(bad) != "currency" {
@@ -110,6 +116,7 @@ func TestInvalidAmounts(t *testing.T) {
 		"negative":       `{"amount":-100}`,
 		"fractional":     `{"amount":10.5}`,
 		"string":         `{"amount":"100"}`,
+		"above max":      `{"amount":9007199254740993}`,
 		"int64 overflow": `{"amount":1e30}`,
 		"missing":        `{}`,
 	}
@@ -127,7 +134,7 @@ func TestInvalidAmounts(t *testing.T) {
 func TestInvalidReference(t *testing.T) {
 	a := newTestAPI(t)
 	id := a.openAccount("alice", "INR", 0)
-	for _, ref := range []string{strings.Repeat("x", 141)} {
+	for _, ref := range []string{"", "   ", strings.Repeat("x", 141)} {
 		res := a.do("POST", "/accounts/"+id+"/deposits", "alice", map[string]any{"amount": 100, "reference": ref})
 		expectStatus(t, res, http.StatusBadRequest)
 		if errField(res) != "reference" {
@@ -141,9 +148,12 @@ func TestValidationReportsAllErrors(t *testing.T) {
 	id := a.openAccount("alice", "INR", 0)
 	res := a.do("POST", "/accounts/"+id+"/deposits", "alice", map[string]any{"amount": -1, "reference": strings.Repeat("x", 141)})
 	expectStatus(t, res, http.StatusBadRequest)
-	errs := res.Body["error"].(map[string]any)["details"].(map[string]any)["errors"].([]any)
-	if len(errs) != 2 {
+	details := res.Body["error"].(map[string]any)["details"].(map[string]any)
+	if errs := details["errors"].([]any); len(errs) != 2 {
 		t.Fatalf("errors = %v", errs)
+	}
+	if details["field"] != "amount" {
+		t.Errorf("details.field = %v, want amount (kept for existing clients)", details["field"])
 	}
 }
 
@@ -161,6 +171,7 @@ func TestRequestHandling(t *testing.T) {
 	a := newTestAPI(t)
 	expectStatus(t, a.do("POST", "/accounts", "alice", `{"currency":`), http.StatusBadRequest)
 	expectStatus(t, a.do("POST", "/accounts", "alice", "currency=INR", "Content-Type", "application/x-www-form-urlencoded"), http.StatusUnsupportedMediaType)
+	expectStatus(t, a.do("POST", "/accounts", "alice", `{"currency":"INR","pad":"`+strings.Repeat("x", 20000)+`"}`), http.StatusRequestEntityTooLarge)
 
 	res := a.do("DELETE", "/accounts", "alice", nil)
 	expectStatus(t, res, http.StatusMethodNotAllowed)

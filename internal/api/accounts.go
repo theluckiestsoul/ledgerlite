@@ -16,7 +16,7 @@ type movementRequest struct {
 }
 
 func (s *server) openAccount(w http.ResponseWriter, r *http.Request, userID string) error {
-	req, err := decode[openAccountRequest](r)
+	req, err := decode[openAccountRequest](w, r)
 	if err != nil {
 		return err
 	}
@@ -39,7 +39,7 @@ func (s *server) getAccount(w http.ResponseWriter, r *http.Request, userID strin
 }
 
 func (s *server) deposit(w http.ResponseWriter, r *http.Request, userID string) error {
-	req, err := decode[movementRequest](r)
+	req, err := decode[movementRequest](w, r)
 	if err != nil {
 		return err
 	}
@@ -52,7 +52,7 @@ func (s *server) deposit(w http.ResponseWriter, r *http.Request, userID string) 
 }
 
 func (s *server) withdraw(w http.ResponseWriter, r *http.Request, userID string) error {
-	req, err := decode[movementRequest](r)
+	req, err := decode[movementRequest](w, r)
 	if err != nil {
 		return err
 	}
